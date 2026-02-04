@@ -1,0 +1,31 @@
+{
+  "name": "shopify-back",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mr-dorian-black/shopify-back.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/mr-dorian-black/shopify-back/issues"
+  },
+  "homepage": "https://github.com/mr-dorian-black/shopify-back#readme",
+  "dependencies": {
+    "axios": "^1.13.4",
+    "better-sqlite3": "^12.6.2",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "form-data": "^4.0.5",
+    "node-cron": "^4.2.1",
+    "p-limit": "^7.2.0"
+  }
+}
