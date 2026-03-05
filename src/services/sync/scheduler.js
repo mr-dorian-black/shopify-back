@@ -1,7 +1,7 @@
 import pLimit from "p-limit";
 import { buildProductInput } from "../../utils/product-builder.js";
 import { getKinguinProducts, getProductDetails } from "../kinguin/products.js";
-import { checkKinguinPrice, checkKinguinStock } from "../kinguin/validation.js";
+import { getAllProductsMap } from "../shopify/products.js";
 import { shopifyGraphQL } from "../../config/axios.js";
 
 class SyncScheduler {
@@ -79,6 +79,13 @@ class SyncScheduler {
     console.log(`📍 Current page: ${this.currentPage}`);
     console.log(`${"=".repeat(60)}\n`);
 
+    // Fetch existing products map once at the start
+    console.log(`📋 Fetching existing products from Shopify...`);
+    const existingProductsMap = await getAllProductsMap();
+    console.log(
+      `📋 Found ${existingProductsMap.size} existing products in Shopify\n`,
+    );
+
     const limit = pLimit(this.concurrency);
     const updates = [];
     const MAX_UPDATES_PER_BATCH = 100; // Prevent memory leak
@@ -92,6 +99,7 @@ class SyncScheduler {
         limit,
         updates,
         MAX_UPDATES_PER_BATCH,
+        existingProductsMap,
       );
     } else {
       for (const platform of this.platforms) {
@@ -101,6 +109,7 @@ class SyncScheduler {
           limit,
           updates,
           MAX_UPDATES_PER_BATCH,
+          existingProductsMap,
         );
 
         // Stop if we've reached the batch limit
@@ -116,7 +125,7 @@ class SyncScheduler {
     // Apply updates if any
     if (updates.length > 0) {
       console.log(`\n📝 Applying ${updates.length} updates...`);
-      await this.applyBulkUpdates(updates);
+      await this.applyBulkUpdates(updates, existingProductsMap);
       this.stats.updated += updates.length;
     } else {
       console.log(`\n✅ No updates needed in this batch`);
@@ -126,7 +135,13 @@ class SyncScheduler {
     this.printStats();
   }
 
-  async processPlatformBatch(platform, limit, updates, maxUpdates) {
+  async processPlatformBatch(
+    platform,
+    limit,
+    updates,
+    maxUpdates,
+    existingProductsMap,
+  ) {
     let pagesProcessed = 0;
 
     while (pagesProcessed < this.batchSize) {
@@ -178,21 +193,25 @@ class SyncScheduler {
         const results = await Promise.all(promises);
         const validDetails = results.filter(Boolean);
 
-        // Check and update each product
+        // Add all valid products to updates array
         for (const product of validDetails) {
           try {
-            const updateNeeded = await this.checkProductNeedsUpdate(product);
+            const sku = product.productId || product.kinguinId;
+            const existingProduct = existingProductsMap.get(sku);
 
-            if (updateNeeded) {
-              updates.push(product);
-              console.log(`🔄 Update needed: ${product.name}`);
+            if (existingProduct) {
+              console.log(`♻️ Will update: ${product.name} (SKU: ${sku})`);
             } else {
-              console.log(`✅ Up to date: ${product.name}`);
+              console.log(`🆕 Will create: ${product.name} (SKU: ${sku})`);
             }
 
+            updates.push(product);
             this.stats.totalProcessed++;
           } catch (error) {
-            console.error(`❌ Error checking ${product.name}:`, error.message);
+            console.error(
+              `❌ Error processing ${product.name}:`,
+              error.message,
+            );
             this.stats.errors++;
           }
         }
@@ -215,95 +234,7 @@ class SyncScheduler {
     this.currentPage += pagesProcessed;
   }
 
-  async checkProductNeedsUpdate(kinguinProduct) {
-    try {
-      // Get Shopify product by SKU
-      const query = `
-        query {
-          products(first: 1, query: "sku:${kinguinProduct.productId}") {
-            edges {
-              node {
-                id
-                title
-                variants(first: 1) {
-                  edges {
-                    node {
-                      id
-                      price
-                      inventoryQuantity
-                    }
-                  }
-                }
-                status
-              }
-            }
-          }
-        }
-      `;
-
-      const response = await shopifyGraphQL.post("", { query });
-      const products = response.data.data.products.edges;
-
-      if (products.length === 0) {
-        // Product doesn't exist in Shopify, needs to be created
-        console.log(`🆕 New product: ${kinguinProduct.name}`);
-        return true;
-      }
-
-      const shopifyProduct = products[0].node;
-      const shopifyVariant = shopifyProduct.variants.edges[0]?.node;
-
-      if (!shopifyVariant) {
-        return true;
-      }
-
-      // Check stock
-      const stock = await checkKinguinStock(kinguinProduct.productId);
-
-      if (!stock.inStock && shopifyProduct.status === "ACTIVE") {
-        console.log(`📉 Out of stock: ${kinguinProduct.name}`);
-        return true;
-      }
-
-      if (stock.inStock && shopifyProduct.status !== "ACTIVE") {
-        console.log(`📈 Back in stock: ${kinguinProduct.name}`);
-        return true;
-      }
-
-      // Check price
-      const priceInfo = await checkKinguinPrice(kinguinProduct.productId);
-
-      if (priceInfo) {
-        const shopifyPrice = parseFloat(shopifyVariant.price);
-        const kinguinPrice = parseFloat(priceInfo.price);
-        const priceDiff = Math.abs(shopifyPrice - kinguinPrice);
-        const priceMargin = kinguinPrice * 0.05; // 5% margin
-
-        if (priceDiff > priceMargin) {
-          console.log(
-            `💰 Price changed: ${kinguinProduct.name} (${shopifyPrice} → ${kinguinPrice})`,
-          );
-          return true;
-        }
-      }
-
-      // Check title
-      if (shopifyProduct.title !== kinguinProduct.name) {
-        console.log(`📝 Title changed: ${kinguinProduct.name}`);
-        return true;
-      }
-
-      return false;
-    } catch (error) {
-      console.error(
-        `❌ Error checking product ${kinguinProduct.productId}:`,
-        error.message,
-      );
-      return false;
-    }
-  }
-
-  async applyBulkUpdates(products) {
+  async applyBulkUpdates(products, existingProductsMap) {
     if (!products || products.length === 0) {
       console.log("⚠️ No products to update");
       return;
@@ -312,24 +243,43 @@ class SyncScheduler {
     try {
       console.log(`📝 Preparing ${products.length} mutations...`);
 
+      let newCount = 0;
+      let updateCount = 0;
+
+      // Build mutations with variables
       const mutations = products
         .map((product) => {
           try {
-            const input = buildProductInput(product);
-            return `
-            mutation {
-              productSet(input: ${JSON.stringify(input)}) {
-                product {
-                  id
-                  title
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
+            const sku = product.productId || product.kinguinId;
+            const existingProduct = existingProductsMap.get(sku);
+            const existingProductId = existingProduct?.id || null;
+
+            if (existingProductId) {
+              updateCount++;
+            } else {
+              newCount++;
             }
-          `;
+
+            const input = buildProductInput(product, existingProductId);
+
+            return {
+              query: `
+                mutation($input: ProductSetInput!) {
+                  productSet(input: $input) {
+                    product {
+                      id
+                      title
+                    }
+                    userErrors {
+                      field
+                      message
+                    }
+                  }
+                }
+              `,
+              variables: { input },
+              productName: product.name,
+            };
           } catch (error) {
             console.error(
               `❌ Failed to build input for ${product.name}:`,
@@ -345,7 +295,9 @@ class SyncScheduler {
         return;
       }
 
-      console.log(`🚀 Executing ${mutations.length} mutations...`);
+      console.log(
+        `🚀 Executing ${mutations.length} mutations (🆕 ${newCount} new, ♻️ ${updateCount} updates)...`,
+      );
 
       // Execute mutations in batches to avoid rate limits
       const batchSize = 10;
@@ -356,24 +308,32 @@ class SyncScheduler {
         const batch = mutations.slice(i, i + batchSize);
 
         const results = await Promise.allSettled(
-          batch.map(async (mutation) => {
+          batch.map(async ({ query, variables, productName }) => {
             try {
               const response = await shopifyGraphQL.post("", {
-                query: mutation,
+                query,
+                variables,
               });
 
               const result = response.data.data?.productSet;
 
               if (result?.userErrors?.length > 0) {
-                console.error("❌ GraphQL errors:", result.userErrors);
+                console.error(
+                  `❌ GraphQL errors for ${productName}:`,
+                  result.userErrors,
+                );
                 errorCount++;
                 return { success: false, errors: result.userErrors };
               }
 
               successCount++;
+              console.log(`✅ ${productName}`);
               return { success: true, product: result?.product };
             } catch (error) {
-              console.error("❌ Mutation failed:", error.message);
+              console.error(
+                `❌ Mutation failed for ${productName}:`,
+                error.message,
+              );
               errorCount++;
               return { success: false, error: error.message };
             }
