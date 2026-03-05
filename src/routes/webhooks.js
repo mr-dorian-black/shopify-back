@@ -211,26 +211,6 @@ router.post("/refunds/create", async (req, res) => {
   }
 });
 
-// Products update webhook
-router.post("/products/update", async (req, res) => {
-  try {
-    res.status(200).send("OK");
-
-    const product = req.body;
-    console.log(`\n📦 Product updated: ${product.id} - ${product.title}`);
-    console.log(
-      `Status: ${product.status}, Price: ${product.variants?.[0]?.price}`,
-    );
-
-    // TODO: Implement logic to sync with Kinguin
-    // Check if price/availability changed and update accordingly
-
-    console.log(`✅ Product update processed: ${product.title}`);
-  } catch (error) {
-    console.error("❌ Product update webhook error:", error);
-  }
-});
-
 router.post("/register", async (req, res) => {
   try {
     const baseUrl = req.body.baseUrl || `https://your-domain.com`;

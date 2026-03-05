@@ -2,6 +2,7 @@ import express from "express";
 import fs from "fs";
 import { getKinguinProducts } from "../services/kinguin/products.js";
 import { buildProductInput } from "../utils/product-builder.js";
+import { getAllProductsMap } from "../services/shopify/products.js";
 import {
   writeJSONL,
   stagedUpload,
@@ -174,6 +175,12 @@ async function fullSync(platforms = "all") {
 }
 
 async function syncPlatform(platform) {
+  // Fetch existing products map once at the start
+  const existingProductsMap = await getAllProductsMap();
+  console.log(
+    `📋 Found ${existingProductsMap.size} existing products in Shopify\n`,
+  );
+
   let batchNumber = 1;
   let startPage = 1;
 
@@ -233,7 +240,21 @@ async function syncPlatform(platform) {
       const rows = productsToSync
         .map((product) => {
           try {
-            return { input: buildProductInput(product) };
+            // Get SKU for this product
+            const sku = String(product.productId || product.kinguinId);
+
+            // Check if product already exists in Shopify
+            const existingProduct = existingProductsMap.get(sku);
+
+            if (existingProduct) {
+              console.log(
+                `♻️  Will update: ${product.name} (${existingProduct.id})`,
+              );
+            }
+
+            return {
+              input: buildProductInput(product, existingProduct?.id || null),
+            };
           } catch (error) {
             console.error(
               `❌ Failed to build product ${product.productId}:`,
@@ -249,8 +270,15 @@ async function syncPlatform(platform) {
         break;
       }
 
+      // Count creates vs updates
+      const updateCount = rows.filter((r) => r.input.id).length;
+      const createCount = rows.length - updateCount;
+
       console.log(
         `✅ Built ${rows.length} valid product inputs (${productsToSync.length - rows.length} skipped)`,
+      );
+      console.log(
+        `   🆕 ${createCount} new products, ♻️  ${updateCount} updates`,
       );
 
       const jsonlFile = `batch_${platform || "all"}_${batchNumber}.jsonl`;

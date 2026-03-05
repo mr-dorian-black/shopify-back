@@ -46,7 +46,7 @@ export async function uploadFile(target, file, retries = 3) {
 
       await axios.post(target.url, form, {
         headers: form.getHeaders(),
-        timeout: 600000, // 10 minutes for large files
+        timeout: 60000, // 1 minute for large files
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
       });
@@ -186,13 +186,34 @@ async function downloadAndAnalyzeBulkResult(url) {
       try {
         const result = JSON.parse(line);
 
-        if (result.userErrors && result.userErrors.length > 0) {
+        // Check for errors in the nested structure
+        if (result.data?.productSet?.userErrors?.length > 0) {
+          errors.push(result);
+          console.log("❌ USER ERROR:");
+          result.data.productSet.userErrors.forEach((err) => {
+            console.log(`  ${err.message}`);
+            console.log(`  Field: ${err.field?.join(".")}`);
+          });
+        } else if (result.userErrors && result.userErrors.length > 0) {
           errors.push(result);
           console.log("❌ USER ERROR:");
           console.log(`  Product: ${result.product?.title || "Unknown"}`);
           console.log(
             `  Errors: ${JSON.stringify(result.userErrors, null, 2)}`,
           );
+        } else if (result.data?.productSet?.product?.id) {
+          const product = result.data.productSet.product;
+          const isUpdate = result.__parentId !== undefined;
+
+          if (isUpdate) {
+            productsUpdated.push(product);
+            console.log(`♻️  Updated: ${product.title} (${product.id})`);
+          } else {
+            productsCreated.push(product);
+            console.log(`✅ Created: ${product.title} (${product.id})`);
+          }
+
+          successes.push(result);
         } else if (result.product && result.product.id) {
           const isUpdate = result.__parentId !== undefined;
 

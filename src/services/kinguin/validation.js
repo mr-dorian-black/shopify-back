@@ -1,14 +1,31 @@
 import { kinguin } from "../../config/axios.js";
 import { getProductDetails } from "./products.js";
+import { updateProductBySKU } from "../shopify/products.js";
 
 export async function checkKinguinStock(productId) {
   try {
-    const res = await kinguin.get(`/v1/products/${productId}/stock`);
+    // Use product details endpoint instead of non-existent /stock endpoint
+    const details = await getProductDetails(productId);
+
+    const qty = details.qty || 0;
+
     return {
-      available: res.data.available || 0,
-      inStock: res.data.available > 0,
+      available: qty,
+      inStock: qty > 0,
     };
   } catch (error) {
+    if (error.response?.status === 404) {
+      console.error(
+        `❌ Product not found in Kinguin: ${productId} (check if SKU is correct Kinguin productId)`,
+      );
+      return {
+        available: 0,
+        inStock: false,
+        notFound: true,
+        error: "Product not found in Kinguin API",
+      };
+    }
+
     console.error(
       `❌ Failed to check stock for ${productId}:`,
       error.response?.data || error.message,
@@ -49,12 +66,38 @@ export async function validateOrderItem(item, shopifyPrice) {
 
   const stock = await checkKinguinStock(kinguinProductId);
 
-  if (!stock.inStock || stock.available < item.quantity) {
+  // Check if product exists in Kinguin
+  if (stock.notFound) {
     return {
       valid: false,
-      reason: `Insufficient stock (available: ${stock.available}, requested: ${item.quantity})`,
+      reason: `Product not found in Kinguin (SKU: ${kinguinProductId} is invalid). Please update SKU with correct Kinguin productId.`,
+      item: item.name,
+      sku: kinguinProductId,
+      notFound: true,
+    };
+  }
+
+  if (!stock.inStock || stock.available < item.quantity) {
+    console.log(
+      `⚠️ Stock discrepancy detected - updating Shopify (available: ${stock.available})`,
+    );
+
+    // Auto-update Shopify with correct quantity
+    const updateSuccess = await updateProductBySKU(
+      kinguinProductId,
+      null, // Don't update price here, will do it later if needed
+      stock.available,
+    ).catch((err) => {
+      console.error("Failed to auto-update quantity:", err.message);
+      return false;
+    });
+
+    return {
+      valid: false,
+      reason: `Insufficient stock (available: ${stock.available}, requested: ${item.quantity})${updateSuccess ? ". Stock updated in Shopify." : ""}`,
       item: item.name,
       available: stock.available,
+      autoUpdated: updateSuccess,
     };
   }
 
@@ -70,25 +113,54 @@ export async function validateOrderItem(item, shopifyPrice) {
     };
   }
 
+  // Simple price comparison (both prices in EUR)
   const shopifyPriceNum = parseFloat(shopifyPrice);
   const kinguinPriceNum = parseFloat(priceInfo.price);
   const priceDiff = Math.abs(shopifyPriceNum - kinguinPriceNum);
-  const priceMargin = kinguinPriceNum * 0.05;
+  const priceMargin = kinguinPriceNum * 0.05; // 5% margin
 
   if (priceDiff > priceMargin) {
     console.warn(
-      `⚠️ Price mismatch: Shopify=${shopifyPriceNum}, Kinguin=${kinguinPriceNum}`,
+      `⚠️ Price mismatch: Shopify=${shopifyPriceNum}€, Kinguin=${kinguinPriceNum}€`,
     );
-    return {
-      valid: false,
-      reason: `Price mismatch (Shopify: ${shopifyPriceNum}, Kinguin: ${kinguinPriceNum})`,
-      item: item.name,
-      shopifyPrice: shopifyPriceNum,
-      kinguinPrice: kinguinPriceNum,
-    };
+    console.log(`🔄 Auto-updating price in Shopify...`);
+
+    // Auto-update Shopify with correct price and quantity
+    const updateSuccess = await updateProductBySKU(
+      kinguinProductId,
+      kinguinPriceNum,
+      stock.available,
+    ).catch((err) => {
+      console.error("Failed to auto-update price:", err.message);
+      return false;
+    });
+
+    if (updateSuccess) {
+      // Successfully updated - cart is now valid with new price
+      return {
+        valid: true,
+        reason: `Price updated automatically (was: ${shopifyPriceNum}€, now: ${kinguinPriceNum}€). Please refresh cart.`,
+        item: item.name,
+        shopifyPrice: shopifyPriceNum,
+        kinguinPrice: kinguinPriceNum,
+        autoUpdated: true,
+        stock: stock.available,
+        price: priceInfo.price,
+      };
+    } else {
+      // Failed to update - cart is invalid
+      return {
+        valid: false,
+        reason: `Price mismatch (Shopify: ${shopifyPriceNum}€, Kinguin: ${kinguinPriceNum}€). Auto-update failed.`,
+        item: item.name,
+        shopifyPrice: shopifyPriceNum,
+        kinguinPrice: kinguinPriceNum,
+        autoUpdated: false,
+      };
+    }
   }
 
-  console.log(`✅ Price OK: ${kinguinPriceNum}`);
+  console.log(`✅ Price OK: ${kinguinPriceNum}€`);
 
   return {
     valid: true,

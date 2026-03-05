@@ -90,11 +90,20 @@ router.post("/validate-cart", async (req, res) => {
 
     const results = await Promise.all(validationPromises);
     const invalidItems = results.filter((r) => !r.valid);
+    const validItems = results.filter((r) => r.valid);
+    const autoUpdatedValidItems = validItems.filter((r) => r.autoUpdated);
     const allValid = invalidItems.length === 0;
 
     console.log(
       `📊 Validation results: ${results.length - invalidItems.length}/${results.length} valid`,
     );
+
+    if (autoUpdatedValidItems.length > 0) {
+      console.log(`🔄 Auto-updated ${autoUpdatedValidItems.length} item(s):`);
+      autoUpdatedValidItems.forEach((item) => {
+        console.log(`   ✅ ${item.item}: ${item.reason}`);
+      });
+    }
 
     if (!allValid) {
       invalidItems.forEach((item) => {
@@ -103,37 +112,76 @@ router.post("/validate-cart", async (req, res) => {
     }
 
     // Categorize errors for better handling
-    const outOfStock = invalidItems.filter((i) => i.reason?.includes("stock"));
+    const notFoundInKinguin = invalidItems.filter((i) => i.notFound);
+    const outOfStock = invalidItems.filter(
+      (i) => !i.notFound && i.reason?.includes("stock"),
+    );
     const priceMismatch = invalidItems.filter((i) =>
       i.reason?.includes("Price mismatch"),
     );
     const otherErrors = invalidItems.filter(
       (i) =>
-        !i.reason?.includes("stock") && !i.reason?.includes("Price mismatch"),
+        !i.notFound &&
+        !i.reason?.includes("stock") &&
+        !i.reason?.includes("Price mismatch"),
     );
 
     // Generate recommended actions
     const recommendations = [];
 
+    // Add info about auto-updated items
+    if (autoUpdatedValidItems.length > 0) {
+      recommendations.push({
+        severity: "info",
+        action: "refresh_cart",
+        message: `${autoUpdatedValidItems.length} item(s) were automatically updated with latest prices from supplier. Please refresh your cart to see updated information.`,
+        items: autoUpdatedValidItems.map((i) => ({
+          name: i.item,
+          oldPrice: i.shopifyPrice,
+          newPrice: i.kinguinPrice,
+        })),
+        autoUpdated: true,
+      });
+    }
+
+    if (notFoundInKinguin.length > 0) {
+      recommendations.push({
+        severity: "critical",
+        action: "invalid_sku",
+        message: `${notFoundInKinguin.length} item(s) have invalid SKU. Product needs to be updated with correct Kinguin productId.`,
+        items: notFoundInKinguin.map((i) => ({
+          name: i.item,
+          currentSku: i.sku,
+          issue: "SKU does not exist in Kinguin API",
+        })),
+      });
+    }
+
     if (outOfStock.length > 0) {
+      const autoUpdatedCount = outOfStock.filter((i) => i.autoUpdated).length;
       recommendations.push({
         severity: "error",
         action: "remove_items",
-        message: `${outOfStock.length} item(s) are out of stock and must be removed from cart`,
+        message: `${outOfStock.length} item(s) are out of stock and must be removed from cart${autoUpdatedCount > 0 ? ` (${autoUpdatedCount} auto-updated in Shopify)` : ""}`,
         items: outOfStock.map((i) => i.item),
+        autoUpdated: autoUpdatedCount > 0,
       });
     }
 
     if (priceMismatch.length > 0) {
+      const autoUpdatedCount = priceMismatch.filter(
+        (i) => i.autoUpdated,
+      ).length;
       recommendations.push({
         severity: "warning",
         action: "update_prices",
-        message: `${priceMismatch.length} item(s) have price changes. Please review updated prices.`,
+        message: `${priceMismatch.length} item(s) have price changes${autoUpdatedCount > 0 ? ` (${autoUpdatedCount} auto-updated in Shopify)` : ""}. Please refresh cart to see updated prices.`,
         items: priceMismatch.map((i) => ({
           name: i.item,
           oldPrice: i.shopifyPrice,
           newPrice: i.kinguinPrice,
         })),
+        autoUpdated: autoUpdatedCount > 0,
       });
     }
 
@@ -155,6 +203,7 @@ router.post("/validate-cart", async (req, res) => {
         total: results.length,
         valid: results.length - invalidItems.length,
         invalid: invalidItems.length,
+        autoUpdated: autoUpdatedValidItems.length,
         outOfStock: outOfStock.length,
         priceMismatch: priceMismatch.length,
       },

@@ -177,14 +177,14 @@ export function buildProductVariants(kinguinProduct) {
   return [
     {
       price: String(kinguinProduct.price),
-      sku: String(kinguinProduct.kinguinId || kinguinProduct.productId),
+      sku: String(kinguinProduct.productId || kinguinProduct.kinguinId),
       optionValues: [
         {
           optionName: "Title",
           name: "Default Title",
         },
       ],
-      inventoryPolicy: "CONTINUE",
+      inventoryPolicy: "DENY", // Block sales when out of stock
       inventoryQuantities: [
         {
           name: "available",
@@ -198,8 +198,10 @@ export function buildProductVariants(kinguinProduct) {
 
 /**
  * Build complete product input for Shopify
+ * @param {object} kinguinProduct - Kinguin product data
+ * @param {string} existingProductId - Optional Shopify product ID for updates
  */
-export function buildProductInput(kinguinProduct) {
+export function buildProductInput(kinguinProduct, existingProductId = null) {
   // Validate product data first
   const validation = validateProductData(kinguinProduct);
   if (!validation.valid) {
@@ -216,10 +218,10 @@ export function buildProductInput(kinguinProduct) {
   const qty = typeof kinguinProduct.qty === "number" ? kinguinProduct.qty : 999;
   const status = qty > 0 ? "ACTIVE" : "DRAFT";
 
-  return {
+  const input = {
     title: kinguinProduct.name,
     descriptionHtml: kinguinProduct.description || "No description available.",
-    handle: `kinguin-${String(kinguinProduct.kinguinId || kinguinProduct.productId).toLowerCase()}`,
+    handle: `kinguin-${String(kinguinProduct.productId || kinguinProduct.kinguinId).toLowerCase()}`,
     vendor: platformName,
     productType: "Game",
     tags,
@@ -239,6 +241,13 @@ export function buildProductInput(kinguinProduct) {
     ],
     variants,
   };
+
+  // Add product ID for updates
+  if (existingProductId) {
+    input.id = existingProductId;
+  }
+
+  return input;
 }
 
 /**
