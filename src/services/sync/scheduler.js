@@ -81,16 +81,35 @@ class SyncScheduler {
 
     const limit = pLimit(this.concurrency);
     const updates = [];
+    const MAX_UPDATES_PER_BATCH = 100; // Prevent memory leak
 
     // If platforms is null, process all platforms (no filter)
     // Otherwise, iterate through specific platforms
     if (this.platforms === null) {
       console.log(`\n📦 Processing all platforms (no filter)`);
-      await this.processPlatformBatch(null, limit, updates);
+      await this.processPlatformBatch(
+        null,
+        limit,
+        updates,
+        MAX_UPDATES_PER_BATCH,
+      );
     } else {
       for (const platform of this.platforms) {
         console.log(`\n📦 Processing platform: ${platform}`);
-        await this.processPlatformBatch(platform, limit, updates);
+        await this.processPlatformBatch(
+          platform,
+          limit,
+          updates,
+          MAX_UPDATES_PER_BATCH,
+        );
+
+        // Stop if we've reached the batch limit
+        if (updates.length >= MAX_UPDATES_PER_BATCH) {
+          console.log(
+            `⚠️ Reached batch limit of ${MAX_UPDATES_PER_BATCH} updates`,
+          );
+          break;
+        }
       }
     }
 
@@ -107,10 +126,18 @@ class SyncScheduler {
     this.printStats();
   }
 
-  async processPlatformBatch(platform, limit, updates) {
+  async processPlatformBatch(platform, limit, updates, maxUpdates) {
     let pagesProcessed = 0;
 
     while (pagesProcessed < this.batchSize) {
+      // Stop if we've reached the max updates limit
+      if (updates.length >= maxUpdates) {
+        console.log(
+          `⚠️ Reached max updates limit (${maxUpdates}), stopping batch`,
+        );
+        break;
+      }
+
       const currentPage = this.currentPage + pagesProcessed;
 
       try {
@@ -121,7 +148,7 @@ class SyncScheduler {
 
         const data = await getKinguinProducts(params);
 
-        if (!data.products || data.products.length === 0) {
+        if (!data.results || data.results.length === 0) {
           console.log(
             `⚠️ No products on page ${currentPage}, resetting to page 1`,
           );
@@ -130,10 +157,10 @@ class SyncScheduler {
           break;
         }
 
-        console.log(`📄 Page ${currentPage}: ${data.products.length} products`);
+        console.log(`📄 Page ${currentPage}: ${data.results.length} products`);
 
         // Fetch details for all products concurrently
-        const promises = data.products.map((p) =>
+        const promises = data.results.map((p) =>
           limit(async () => {
             try {
               const details = await getProductDetails(p.productId);
@@ -172,7 +199,7 @@ class SyncScheduler {
 
         pagesProcessed++;
 
-        if (!data.hasMore || data.products.length < 100) {
+        if (!data.hasMore || data.results.length < 100) {
           console.log(`⚠️ Last page reached, resetting to page 1`);
           this.currentPage = 1;
           this.stats.cycles++;
@@ -277,55 +304,99 @@ class SyncScheduler {
   }
 
   async applyBulkUpdates(products) {
-    try {
-      const mutations = products.map((product) => {
-        const input = buildProductInput(product);
+    if (!products || products.length === 0) {
+      console.log("⚠️ No products to update");
+      return;
+    }
 
-        return `
-          mutation {
-            productSet(input: ${JSON.stringify(input)}) {
-              product {
-                id
-                title
-              }
-              userErrors {
-                field
-                message
+    try {
+      console.log(`📝 Preparing ${products.length} mutations...`);
+
+      const mutations = products
+        .map((product) => {
+          try {
+            const input = buildProductInput(product);
+            return `
+            mutation {
+              productSet(input: ${JSON.stringify(input)}) {
+                product {
+                  id
+                  title
+                }
+                userErrors {
+                  field
+                  message
+                }
               }
             }
+          `;
+          } catch (error) {
+            console.error(
+              `❌ Failed to build input for ${product.name}:`,
+              error.message,
+            );
+            return null;
           }
-        `;
-      });
+        })
+        .filter(Boolean);
+
+      if (mutations.length === 0) {
+        console.error("❌ No valid mutations to execute");
+        return;
+      }
+
+      console.log(`🚀 Executing ${mutations.length} mutations...`);
 
       // Execute mutations in batches to avoid rate limits
       const batchSize = 10;
+      let successCount = 0;
+      let errorCount = 0;
+
       for (let i = 0; i < mutations.length; i += batchSize) {
         const batch = mutations.slice(i, i + batchSize);
 
-        await Promise.all(
+        const results = await Promise.allSettled(
           batch.map(async (mutation) => {
             try {
               const response = await shopifyGraphQL.post("", {
                 query: mutation,
               });
 
-              if (response.data.data?.productSet?.userErrors?.length) {
-                console.error(
-                  "❌ Update error:",
-                  response.data.data.productSet.userErrors,
-                );
+              const result = response.data.data?.productSet;
+
+              if (result?.userErrors?.length > 0) {
+                console.error("❌ GraphQL errors:", result.userErrors);
+                errorCount++;
+                return { success: false, errors: result.userErrors };
               }
+
+              successCount++;
+              return { success: true, product: result?.product };
             } catch (error) {
               console.error("❌ Mutation failed:", error.message);
+              errorCount++;
+              return { success: false, error: error.message };
             }
           }),
         );
+
+        // Log batch results
+        const failed = results.filter(
+          (r) => r.status === "rejected" || !r.value?.success,
+        );
+        if (failed.length > 0) {
+          console.warn(
+            `⚠️ Batch ${Math.floor(i / batchSize) + 1}: ${failed.length} failed`,
+          );
+        }
 
         // Rate limit protection
         await new Promise((r) => setTimeout(r, 1000));
       }
 
-      console.log(`✅ Applied ${products.length} updates`);
+      console.log(
+        `✅ Updates completed: ${successCount} successful, ${errorCount} failed`,
+      );
     } catch (error) {
       console.error("❌ Failed to apply bulk updates:", error.message);
       throw error;

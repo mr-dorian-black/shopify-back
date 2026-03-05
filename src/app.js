@@ -3,8 +3,6 @@ import routes from "./routes/index.js";
 
 const app = express();
 
-app.use(express.json());
-
 // Add raw body for webhook verification
 app.use(
   express.json({

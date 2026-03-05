@@ -5,7 +5,27 @@ import { getAdminToken } from "../services/shopify/auth.js";
 export const kinguin = axios.create({
   baseURL: "https://gateway.kinguin.net/esa/api",
   headers: { "X-Api-Key": KINGUIN_API_KEY },
+  timeout: 30000,
 });
+
+// Add error interceptor for Kinguin API
+kinguin.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.code === "ECONNABORTED") {
+      console.error("❌ Kinguin API timeout:", error.config?.url);
+    } else if (error.response) {
+      console.error(
+        "❌ Kinguin API error:",
+        error.response.status,
+        error.response.data,
+      );
+    } else {
+      console.error("❌ Kinguin API network error:", error.message);
+    }
+    return Promise.reject(error);
+  },
+);
 
 export const shopifyGraphQL = axios.create({
   baseURL: `https://${SHOPIFY_STORE}.myshopify.com/admin/api/2026-01/graphql.json`,

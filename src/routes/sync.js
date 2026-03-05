@@ -13,9 +13,7 @@ import SyncScheduler from "../services/sync/scheduler.js";
 
 const router = express.Router();
 
-const BATCH_SIZE = 10000;
 const PAGES_PER_BATCH = 2; // Reduced from 3 to prevent upload timeouts
-const CONCURRENCY = 8;
 
 // Global scheduler instance
 let scheduler = null;
@@ -126,12 +124,12 @@ router.get("/auto/status", (req, res) => {
 router.post("/auto/run-now", async (req, res) => {
   try {
     if (!scheduler) {
-      const platforms = req.body.platforms || "all";
+      const platforms = req.body?.platforms || "all";
       scheduler = new SyncScheduler({
         platforms: platforms,
-        batchSize: req.body.batchSize || 10,
-        intervalMinutes: 30,
-        concurrency: 8,
+        batchSize: req.body?.batchSize || 10,
+        intervalMinutes: req.body?.intervalMinutes || 10,
+        concurrency: req.body?.concurrency || 8,
       });
     }
 
@@ -231,49 +229,82 @@ async function syncPlatform(platform) {
       `\n📝 Preparing ${productsToSync.length} products for bulk upload...`,
     );
 
-    const rows = productsToSync.map((product) => ({
-      input: buildProductInput(product),
-    }));
+    try {
+      const rows = productsToSync
+        .map((product) => {
+          try {
+            return { input: buildProductInput(product) };
+          } catch (error) {
+            console.error(
+              `❌ Failed to build product ${product.productId}:`,
+              error.message,
+            );
+            return null;
+          }
+        })
+        .filter(Boolean);
 
-    const jsonlFile = `batch_${platform || "all"}_${batchNumber}.jsonl`;
-    await writeJSONL(jsonlFile, rows);
-
-    console.log(`📤 Staged upload ${jsonlFile}...`);
-    const target = await stagedUpload(jsonlFile);
-    console.log(`📤 Upload file ${jsonlFile}...`);
-    const stagedPath = await uploadFile(target, jsonlFile);
-
-    console.log(`🚀 Starting bulk operation...`);
-    const mutation = `mutation call($input: ProductSetInput!) {
-      productSet(input: $input) {
-        product {
-          id
-          title
-          status
-        }
-        userErrors {
-          field
-          message
-        }
+      if (rows.length === 0) {
+        console.error(`❌ No valid products to upload in batch ${batchNumber}`);
+        break;
       }
-    }`;
 
-    const bulkId = await runBulk(mutation, stagedPath);
+      console.log(
+        `✅ Built ${rows.length} valid product inputs (${productsToSync.length - rows.length} skipped)`,
+      );
 
-    console.log(`⏳ Polling bulk operation...`);
-    const result = await pollBulkOperation(bulkId);
+      const jsonlFile = `batch_${platform || "all"}_${batchNumber}.jsonl`;
+      await writeJSONL(jsonlFile, rows);
 
-    console.log(`\n📊 Batch ${batchNumber} Results:`);
-    console.log(
-      `✅ Products created: ${result.analysis?.productsCreated || 0}`,
-    );
-    console.log(
-      `♻️  Products updated: ${result.analysis?.productsUpdated || 0}`,
-    );
-    console.log(`❌ Errors: ${result.analysis?.errors?.length || 0}`);
+      console.log(`📤 Staged upload ${jsonlFile}...`);
+      const target = await stagedUpload(jsonlFile);
 
-    fs.unlinkSync(jsonlFile);
-    console.log(`🗑️  Cleaned up ${jsonlFile}`);
+      console.log(`📤 Upload file ${jsonlFile}...`);
+      const stagedPath = await uploadFile(target, jsonlFile);
+
+      console.log(`🚀 Starting bulk operation...`);
+      const mutation = `mutation call($input: ProductSetInput!) {
+        productSet(input: $input) {
+          product {
+            id
+            title
+            status
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }`;
+
+      const bulkId = await runBulk(mutation, stagedPath);
+
+      console.log(`⏳ Polling bulk operation...`);
+      const result = await pollBulkOperation(bulkId);
+
+      console.log(`\n📊 Batch ${batchNumber} Results:`);
+      console.log(
+        `✅ Products created: ${result.analysis?.productsCreated || 0}`,
+      );
+      console.log(
+        `♻️  Products updated: ${result.analysis?.productsUpdated || 0}`,
+      );
+      console.log(`❌ Errors: ${result.analysis?.errors?.length || 0}`);
+
+      // Cleanup
+      try {
+        fs.unlinkSync(jsonlFile);
+        console.log(`🗑️  Cleaned up ${jsonlFile}`);
+      } catch (cleanupError) {
+        console.warn(
+          `⚠️ Failed to cleanup ${jsonlFile}:`,
+          cleanupError.message,
+        );
+      }
+    } catch (error) {
+      console.error(`❌ Batch ${batchNumber} failed:`, error.message);
+      // Continue to next batch instead of stopping entirely
+    }
 
     if (!hasMorePages) {
       console.log(`✅ Completed all pages`);

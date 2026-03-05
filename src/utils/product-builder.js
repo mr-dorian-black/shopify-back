@@ -200,11 +200,21 @@ export function buildProductVariants(kinguinProduct) {
  * Build complete product input for Shopify
  */
 export function buildProductInput(kinguinProduct) {
+  // Validate product data first
+  const validation = validateProductData(kinguinProduct);
+  if (!validation.valid) {
+    throw new Error(`Invalid product data: ${validation.errors.join(", ")}`);
+  }
+
   const platformName = extractPlatform(kinguinProduct);
   const files = buildProductFiles(kinguinProduct);
   const metafields = buildProductMetafields(kinguinProduct, platformName);
   const tags = buildProductTags(kinguinProduct);
   const variants = buildProductVariants(kinguinProduct);
+
+  // Ensure product has valid quantity
+  const qty = typeof kinguinProduct.qty === "number" ? kinguinProduct.qty : 999;
+  const status = qty > 0 ? "ACTIVE" : "DRAFT";
 
   return {
     title: kinguinProduct.name,
@@ -213,7 +223,7 @@ export function buildProductInput(kinguinProduct) {
     vendor: platformName,
     productType: "Game",
     tags,
-    status: kinguinProduct.qty > 0 ? "ACTIVE" : "DRAFT",
+    status,
     metafields,
     files,
     productOptions: [
