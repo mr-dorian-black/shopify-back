@@ -41,10 +41,6 @@ export function logOrderProcessing(orderId, orderName, message, data = null) {
   const logLine = `[${timestamp}] ${message}\n${data ? JSON.stringify(data, null, 2) + "\n" : ""}\n`;
 
   fs.appendFileSync(filepath, logLine, "utf8");
-
-  if (data) {
-    console.log(JSON.stringify(data, null, 2));
-  }
 }
 
 /**

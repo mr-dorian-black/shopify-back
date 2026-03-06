@@ -8,7 +8,10 @@ import {
   cancelShopifyOrder,
   refundOrder,
   addOrderNote,
+  fulfillOrder,
+  saveKeysToOrder,
 } from "../services/shopify/orders.js";
+import { getProductImageByVariantId } from "../services/shopify/products.js";
 import { saveKeyToCustomer } from "../services/shopify/customers.js";
 import {
   sendKeyEmail,
@@ -181,13 +184,24 @@ router.post("/orders/create", async (req, res) => {
 
         console.log(`✅ Received ${keys.length} key(s)`);
 
+        // Try to get product image from webhook or fetch from API
+        let productImage = item.image || item.featured_image?.url || null;
+
+        // If no image in webhook, try to fetch from Shopify API
+        if (!productImage && item.variant_id) {
+          console.log(`📷 Fetching product image from Shopify...`);
+          productImage = await getProductImageByVariantId(item.variant_id);
+          if (productImage) {
+            console.log(`✅ Product image found`);
+          }
+        }
+
         for (const keyData of keys) {
           keysToDeliver.push({
             productName: item.name,
             key: keyData.serial || keyData.key,
             kinguinOrderId: kinguinOrder.orderId,
-            // Get image from line item - Shopify provides this in webhook
-            image: item.featured_image?.url || null,
+            image: productImage,
             price: item.price,
           });
         }
@@ -295,7 +309,6 @@ router.post("/orders/create", async (req, res) => {
             order.id,
             keyInfo.productName,
             keyInfo.key,
-            (image = keyInfo.image),
           );
         }
 
@@ -334,6 +347,34 @@ router.post("/orders/create", async (req, res) => {
 
         const noteText = `Keys delivered:\n${keysToDeliver.map((k) => `${k.productName}: ${k.key}`).join("\n")}`;
         await addOrderNote(orderGid, noteText);
+
+        // Save keys to order metafields so customer can see them in their account
+        try {
+          await saveKeysToOrder(orderGid, keysToDeliver);
+          console.log(
+            `✅ Keys saved to order metafields (visible to customer)`,
+          );
+        } catch (metafieldError) {
+          console.warn(
+            `⚠️ Could not save keys to order metafields:`,
+            metafieldError.message,
+          );
+        }
+
+        // Mark order as fulfilled in Shopify
+        try {
+          await fulfillOrder(orderGid);
+          console.log(`✅ Order ${order.name} marked as fulfilled`);
+        } catch (fulfillError) {
+          console.warn(
+            `⚠️ Could not mark order as fulfilled (keys still delivered):`,
+            fulfillError.message,
+          );
+          await addOrderNote(
+            orderGid,
+            `⚠️ Auto-fulfillment failed: ${fulfillError.message}. Keys were delivered successfully.`,
+          );
+        }
 
         // If there were failed items, add note to contact support
         if (failedItems.length > 0) {

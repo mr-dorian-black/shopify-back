@@ -125,6 +125,48 @@ export async function getAllProductsMap() {
 }
 
 /**
+ * Get product image by variant ID
+ * @param {string} variantId - Variant ID (can be numeric or GID)
+ * @returns {Promise<string|null>} - Image URL or null
+ */
+export async function getProductImageByVariantId(variantId) {
+  try {
+    // Convert to GID if numeric
+    const gid = variantId.toString().startsWith("gid://")
+      ? variantId
+      : `gid://shopify/ProductVariant/${variantId}`;
+
+    const query = `
+      query {
+        productVariant(id: "${gid}") {
+          image {
+            url
+          }
+          product {
+            featuredImage {
+              url
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await shopifyGraphQL.post("", { query });
+
+    if (response.data?.data?.productVariant) {
+      const variant = response.data.data.productVariant;
+      // Return variant image if available, otherwise product featured image
+      return variant.image?.url || variant.product?.featuredImage?.url || null;
+    }
+
+    return null;
+  } catch (error) {
+    console.warn("⚠️ Failed to fetch product image:", error.message);
+    return null;
+  }
+}
+
+/**
  * Update single product price and quantity in Shopify
  * @param {string} sku - Product SKU
  * @param {number} newPrice - New price from Kinguin (optional, null to skip)
