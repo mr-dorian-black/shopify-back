@@ -25,8 +25,8 @@ const router = express.Router();
 router.post("/orders/create", async (req, res) => {
   try {
     res.status(200).send("OK");
-
     const order = req.body;
+    console.log(JSON.stringify(order, null, 2));
     console.log(`\n🛒 New order received: ${order.id} (${order.name})`);
     console.log(`Customer: ${order.customer?.email}`);
 
@@ -41,6 +41,31 @@ router.post("/orders/create", async (req, res) => {
       if (!validation.valid) {
         validationErrors.push(validation);
         console.error(`❌ Validation failed: ${validation.reason}`);
+      } else if (validation.autoUpdated && validation.kinguinPrice) {
+        // Price was updated during validation - need to check if customer paid enough
+        const customerPaid = parseFloat(item.price);
+        const actualCost = parseFloat(validation.kinguinPrice);
+        const loss = actualCost - customerPaid;
+
+        if (loss > 0.5) {
+          // Customer paid significantly less than actual cost
+          validationErrors.push({
+            valid: false,
+            item: item.name,
+            reason: `Price increased after order placement. Customer paid ${customerPaid.toFixed(2)}€, actual cost ${actualCost.toFixed(2)}€. Loss: ${loss.toFixed(2)}€. Cannot fulfill at loss.`,
+            shopifyPrice: customerPaid,
+            kinguinPrice: actualCost,
+          });
+          console.error(
+            `❌ ${item.name}: Price too high - would lose ${loss.toFixed(2)}€`,
+          );
+        } else if (loss > 0) {
+          console.warn(
+            `⚠️ ${item.name}: Small price difference -${loss.toFixed(2)}€ (acceptable)`,
+          );
+        } else {
+          console.log(`✅ ${item.name} validated (price favorable)`);
+        }
       } else {
         console.log(`✅ ${item.name} validated successfully`);
       }
@@ -82,27 +107,43 @@ router.post("/orders/create", async (req, res) => {
     console.log("\n✅ All items validated, proceeding with fulfillment...");
 
     const keysToDeliver = [];
+    const failedItems = []; // Track failed items
+    let expectedKeysCount = 0; // Total keys we should receive
 
     for (const item of order.line_items) {
+      expectedKeysCount += item.quantity; // Track expected total
+
       try {
-        console.log(`\n📦 Processing: ${item.name}`);
+        console.log(`\n📦 Processing: ${item.name} (qty: ${item.quantity})`);
 
         const kinguinProductId = item.sku;
 
         console.log(
           `🔑 Ordering key from Kinguin (Product ID: ${kinguinProductId})`,
         );
+
         const kinguinOrder = await createKinguinOrder(
           kinguinProductId,
           item.quantity,
         );
 
+        console.log("kinguinOrder: ", JSON.stringify(kinguinOrder, null, 2));
+
         await new Promise((r) => setTimeout(r, 2000));
 
         const keys = await getKinguinOrderKeys(kinguinOrder.orderId);
 
+        console.log("keys: ", JSON.stringify(keys, null, 2));
+
         if (!keys.length) {
           throw new Error("No keys received from Kinguin");
+        }
+
+        // Check if received correct quantity
+        if (keys.length !== item.quantity) {
+          console.warn(
+            `⚠️ Expected ${item.quantity} keys, received ${keys.length}`,
+          );
         }
 
         console.log(`✅ Received ${keys.length} key(s)`);
@@ -116,9 +157,77 @@ router.post("/orders/create", async (req, res) => {
         }
       } catch (error) {
         console.error(`❌ Failed to process ${item.name}:`, error.message);
+
+        // Track failed item
+        failedItems.push({
+          name: item.name,
+          quantity: item.quantity,
+          sku: item.sku,
+          price: item.price,
+          error: error.message,
+        });
+
         await addOrderNote(
           orderGid,
-          `Failed to get keys for ${item.name}: ${error.message}`,
+          `❌ Failed to get keys for ${item.name}: ${error.message}`,
+        );
+      }
+    }
+
+    // Check if we got all keys
+    if (failedItems.length > 0) {
+      console.error(
+        `\n❌ CRITICAL: Failed to fulfill ${failedItems.length} items!`,
+      );
+
+      const failureMessage = failedItems
+        .map((item) => `${item.name} (${item.quantity}x): ${item.error}`)
+        .join("\n");
+
+      try {
+        // Add comprehensive note about failure
+        await addOrderNote(
+          orderGid,
+          `⚠️ PARTIAL FULFILLMENT FAILURE:\n${failureMessage}\n\nReceived ${keysToDeliver.length}/${expectedKeysCount} keys.\n\nAction required: Manual review needed.`,
+        );
+
+        // If NO keys were delivered, cancel the entire order
+        if (keysToDeliver.length === 0) {
+          console.error("❌ No keys delivered - cancelling order");
+          await cancelShopifyOrder(
+            orderGid,
+            "Failed to obtain any keys from supplier",
+          );
+          await refundOrder(orderGid);
+
+          if (order.customer?.email) {
+            await sendOrderCancellationEmail(
+              order.customer.email,
+              order.customer.first_name || "Customer",
+              order.name,
+              failedItems.map((item) => ({
+                item: item.name,
+                reason: item.error,
+              })),
+            );
+          }
+
+          console.log("✅ Order fully cancelled and refunded");
+          return;
+        } else {
+          // Partial delivery - send what we have but notify about issues
+          console.warn(
+            `⚠️ Partial delivery: ${keysToDeliver.length}/${expectedKeysCount} keys`,
+          );
+          await addOrderNote(
+            orderGid,
+            `⚠️ Partial keys delivered. Customer support review required.`,
+          );
+        }
+      } catch (error) {
+        console.error(
+          "❌ Failed to handle fulfillment failure:",
+          error.message,
         );
       }
     }
@@ -145,9 +254,30 @@ router.post("/orders/create", async (req, res) => {
 
         const noteText = `Keys delivered:\n${keysToDeliver.map((k) => `${k.productName}: ${k.key}`).join("\n")}`;
         await addOrderNote(orderGid, noteText);
+
+        // If there were failed items, add note to contact support
+        if (failedItems.length > 0) {
+          await addOrderNote(
+            orderGid,
+            `⚠️ Customer notified about partial delivery. ${failedItems.length} item(s) failed. Manual refund may be required.`,
+          );
+        }
       } catch (error) {
         console.error("❌ Failed to deliver keys:", error.message);
+        await addOrderNote(
+          orderGid,
+          `❌ Key delivery failed: ${error.message}. Keys obtained but not sent to customer!`,
+        );
       }
+    } else if (keysToDeliver.length > 0 && !order.customer) {
+      // Keys obtained but no customer to send to
+      console.error("❌ Keys obtained but no customer information available!");
+      await addOrderNote(
+        orderGid,
+        `❌ CRITICAL: ${keysToDeliver.length} keys obtained but no customer info to deliver. Manual intervention required.`,
+      );
+    } else if (keysToDeliver.length === 0) {
+      console.error("❌ No keys to deliver - already handled above");
     }
 
     console.log(`✅ Order ${order.name} processed successfully`);

@@ -1,7 +1,6 @@
 import pLimit from "p-limit";
 import { buildProductInput } from "../../utils/product-builder.js";
 import { getKinguinProducts, getProductDetails } from "../kinguin/products.js";
-import { getAllProductsMap } from "../shopify/products.js";
 import { shopifyGraphQL } from "../../config/axios.js";
 
 class SyncScheduler {
@@ -17,6 +16,7 @@ class SyncScheduler {
     this.concurrency = options.concurrency || 8;
     this.stats = {
       totalProcessed: 0,
+      created: 0,
       updated: 0,
       errors: 0,
       lastSync: null,
@@ -78,17 +78,11 @@ class SyncScheduler {
     console.log(`🔄 Starting sync batch #${this.stats.cycles + 1}`);
     console.log(`📍 Current page: ${this.currentPage}`);
     console.log(`${"=".repeat(60)}\n`);
-
-    // Fetch existing products map once at the start
-    console.log(`📋 Fetching existing products from Shopify...`);
-    const existingProductsMap = await getAllProductsMap();
-    console.log(
-      `📋 Found ${existingProductsMap.size} existing products in Shopify\n`,
-    );
+    console.log(`📝 Using handle-based upsert (no products fetch needed)\n`);
 
     const limit = pLimit(this.concurrency);
     const updates = [];
-    const MAX_UPDATES_PER_BATCH = 100; // Prevent memory leak
+    const MAX_UPDATES_PER_BATCH = this.batchSize * 100; // Prevent memory leak
 
     // If platforms is null, process all platforms (no filter)
     // Otherwise, iterate through specific platforms
@@ -99,7 +93,6 @@ class SyncScheduler {
         limit,
         updates,
         MAX_UPDATES_PER_BATCH,
-        existingProductsMap,
       );
     } else {
       for (const platform of this.platforms) {
@@ -109,7 +102,6 @@ class SyncScheduler {
           limit,
           updates,
           MAX_UPDATES_PER_BATCH,
-          existingProductsMap,
         );
 
         // Stop if we've reached the batch limit
@@ -125,8 +117,11 @@ class SyncScheduler {
     // Apply updates if any
     if (updates.length > 0) {
       console.log(`\n📝 Applying ${updates.length} updates...`);
-      await this.applyBulkUpdates(updates, existingProductsMap);
-      this.stats.updated += updates.length;
+      const result = await this.applyBulkUpdates(updates);
+      if (result) {
+        this.stats.created += result.created;
+        this.stats.updated += result.updated;
+      }
     } else {
       console.log(`\n✅ No updates needed in this batch`);
     }
@@ -135,14 +130,9 @@ class SyncScheduler {
     this.printStats();
   }
 
-  async processPlatformBatch(
-    platform,
-    limit,
-    updates,
-    maxUpdates,
-    existingProductsMap,
-  ) {
+  async processPlatformBatch(platform, limit, updates, maxUpdates) {
     let pagesProcessed = 0;
+    let shouldResetPage = false;
 
     while (pagesProcessed < this.batchSize) {
       // Stop if we've reached the max updates limit
@@ -169,6 +159,7 @@ class SyncScheduler {
           );
           this.currentPage = 1;
           this.stats.cycles++;
+          shouldResetPage = true;
           break;
         }
 
@@ -197,13 +188,7 @@ class SyncScheduler {
         for (const product of validDetails) {
           try {
             const sku = product.productId || product.kinguinId;
-            const existingProduct = existingProductsMap.get(sku);
-
-            if (existingProduct) {
-              console.log(`♻️ Will update: ${product.name} (SKU: ${sku})`);
-            } else {
-              console.log(`🆕 Will create: ${product.name} (SKU: ${sku})`);
-            }
+            console.log(`📦 Will upsert: ${product.name} (SKU: ${sku})`);
 
             updates.push(product);
             this.stats.totalProcessed++;
@@ -218,10 +203,11 @@ class SyncScheduler {
 
         pagesProcessed++;
 
-        if (!data.hasMore || data.results.length < 100) {
+        if (data.results.length < 100) {
           console.log(`⚠️ Last page reached, resetting to page 1`);
           this.currentPage = 1;
           this.stats.cycles++;
+          shouldResetPage = true;
           break;
         }
       } catch (error) {
@@ -231,10 +217,13 @@ class SyncScheduler {
       }
     }
 
-    this.currentPage += pagesProcessed;
+    // Only add pagesProcessed if we didn't reset to page 1
+    if (!shouldResetPage) {
+      this.currentPage += pagesProcessed;
+    }
   }
 
-  async applyBulkUpdates(products, existingProductsMap) {
+  async applyBulkUpdates(products) {
     if (!products || products.length === 0) {
       console.log("⚠️ No products to update");
       return;
@@ -243,24 +232,11 @@ class SyncScheduler {
     try {
       console.log(`📝 Preparing ${products.length} mutations...`);
 
-      let newCount = 0;
-      let updateCount = 0;
-
-      // Build mutations with variables
+      // Build mutations with variables (handle-based upsert)
       const mutations = products
         .map((product) => {
           try {
-            const sku = product.productId || product.kinguinId;
-            const existingProduct = existingProductsMap.get(sku);
-            const existingProductId = existingProduct?.id || null;
-
-            if (existingProductId) {
-              updateCount++;
-            } else {
-              newCount++;
-            }
-
-            const input = buildProductInput(product, existingProductId);
+            const input = buildProductInput(product);
 
             return {
               query: `
@@ -269,6 +245,8 @@ class SyncScheduler {
                     product {
                       id
                       title
+                      handle
+                      status
                     }
                     userErrors {
                       field
@@ -279,6 +257,7 @@ class SyncScheduler {
               `,
               variables: { input },
               productName: product.name,
+              isCreate: !input.id, // Track if this is create or update
             };
           } catch (error) {
             console.error(
@@ -296,28 +275,200 @@ class SyncScheduler {
       }
 
       console.log(
-        `🚀 Executing ${mutations.length} mutations (🆕 ${newCount} new, ♻️ ${updateCount} updates)...`,
+        `🚀 Executing ${mutations.length} mutations (handle-based upsert)...`,
       );
 
       // Execute mutations in batches to avoid rate limits
       const batchSize = 10;
       let successCount = 0;
+      let createdCount = 0;
+      let updatedCount = 0;
       let errorCount = 0;
 
       for (let i = 0; i < mutations.length; i += batchSize) {
         const batch = mutations.slice(i, i + batchSize);
 
+        // Add delay between batches to avoid rate limits (except first batch)
+        if (i > 0) {
+          console.log(`⏳ Waiting 1s before next batch...`);
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+
         const results = await Promise.allSettled(
-          batch.map(async ({ query, variables, productName }) => {
+          batch.map(async ({ query, variables, productName, isCreate }) => {
             try {
               const response = await shopifyGraphQL.post("", {
                 query,
                 variables,
               });
 
+              // Check for THROTTLED error - retry with backoff
+              if (
+                response.data?.errors?.some(
+                  (e) => e.extensions?.code === "THROTTLED",
+                )
+              ) {
+                console.warn(
+                  `⚠️ ${productName}: Rate limited, waiting 3s and retrying...`,
+                );
+                await new Promise((resolve) => setTimeout(resolve, 3000));
+
+                // Retry once after delay
+                const retryResponse = await shopifyGraphQL.post("", {
+                  query,
+                  variables,
+                });
+
+                // Check again if still throttled
+                if (
+                  retryResponse.data?.errors?.some(
+                    (e) => e.extensions?.code === "THROTTLED",
+                  )
+                ) {
+                  console.error(
+                    `❌ ${productName}: Still throttled after retry`,
+                  );
+                  errorCount++;
+                  return { success: false, error: "Rate limit exceeded" };
+                }
+
+                // Use retry response
+                response.data = retryResponse.data;
+              }
+
+              // Log response structure for debugging
+              if (!response.data?.data?.productSet) {
+                console.error(
+                  `❌ ${productName}: Unexpected response structure`,
+                );
+                console.error(
+                  `   Response:`,
+                  JSON.stringify(response.data, null, 2),
+                );
+                errorCount++;
+                return {
+                  success: false,
+                  error: "Invalid response structure",
+                };
+              }
+
               const result = response.data.data?.productSet;
 
               if (result?.userErrors?.length > 0) {
+                // Check if error is "handle already in use"
+                const handleError = result.userErrors.find((e) =>
+                  e.message?.includes("already in use"),
+                );
+
+                if (handleError) {
+                  // Product exists - need to find its ID and retry
+                  console.warn(
+                    `⚠️ ${productName}: Handle exists, fetching ID to update...`,
+                  );
+
+                  try {
+                    // Extract handle and SKU
+                    const handle = variables.input.handle;
+                    const sku =
+                      variables.input.variants?.[0]?.sku ||
+                      handle.replace("kinguin-", "");
+
+                    // Try finding by handle first (more reliable)
+                    const findByHandleQuery = `
+                      query {
+                        products(first: 1, query: "handle:${handle}") {
+                          edges {
+                            node {
+                              id
+                              handle
+                            }
+                          }
+                        }
+                      }
+                    `;
+
+                    const findResponse = await shopifyGraphQL.post("", {
+                      query: findByHandleQuery,
+                    });
+                    let existingId =
+                      findResponse.data.data?.products?.edges?.[0]?.node?.id;
+
+                    // If not found by handle, try by SKU
+                    if (!existingId) {
+                      console.log(`  Trying SKU search: ${sku}`);
+                      const findBySKUQuery = `
+                        query {
+                          products(first: 1, query: "sku:${sku}") {
+                            edges {
+                              node {
+                                id
+                                handle
+                              }
+                            }
+                          }
+                        }
+                      `;
+
+                      const skuResponse = await shopifyGraphQL.post("", {
+                        query: findBySKUQuery,
+                      });
+                      existingId =
+                        skuResponse.data.data?.products?.edges?.[0]?.node?.id;
+                    }
+
+                    if (existingId) {
+                      // Retry with ID
+                      console.log(`🔄 Retrying with ID: ${existingId}`);
+                      const retryVariables = {
+                        ...variables,
+                        input: { ...variables.input, id: existingId },
+                      };
+
+                      const retryResponse = await shopifyGraphQL.post("", {
+                        query,
+                        variables: retryVariables,
+                      });
+
+                      const retryResult = retryResponse.data.data?.productSet;
+
+                      if (retryResult?.userErrors?.length > 0) {
+                        console.error(
+                          `❌ Retry failed for ${productName}:`,
+                          retryResult.userErrors,
+                        );
+                        errorCount++;
+                        return {
+                          success: false,
+                          errors: retryResult.userErrors,
+                        };
+                      }
+
+                      successCount++;
+                      updatedCount++; // Retry means it was an update
+                      console.log(`✅ ${productName} (updated)`);
+                      return { success: true, product: retryResult?.product };
+                    } else {
+                      // Product not found by handle or SKU
+                      console.error(
+                        `❌ ${productName}: Product not found in Shopify (handle: ${handle}, sku: ${sku})`,
+                      );
+                      errorCount++;
+                      return {
+                        success: false,
+                        error: "Product not found for update",
+                      };
+                    }
+                  } catch (retryError) {
+                    console.error(
+                      `❌ Failed to retry ${productName}:`,
+                      retryError.message,
+                    );
+                    errorCount++;
+                    return { success: false, error: retryError.message };
+                  }
+                }
+
+                // Other errors
                 console.error(
                   `❌ GraphQL errors for ${productName}:`,
                   result.userErrors,
@@ -326,8 +477,36 @@ class SyncScheduler {
                 return { success: false, errors: result.userErrors };
               }
 
+              // Success - but verify product was actually created/updated
+              const productId = result?.product?.id;
+
+              if (!productId) {
+                console.error(
+                  `❌ ${productName}: No product ID returned (might not be created)`,
+                );
+                console.error(
+                  `   Full response:`,
+                  JSON.stringify(result, null, 2),
+                );
+                errorCount++;
+                return { success: false, error: "No product ID in response" };
+              }
+
               successCount++;
-              console.log(`✅ ${productName}`);
+              if (isCreate) {
+                createdCount++;
+                const status = result.product?.status || "UNKNOWN";
+                console.log(
+                  `✅ ${productName} (created) - ID: ${productId}, Status: ${status}`,
+                );
+              } else {
+                updatedCount++;
+                const status = result.product?.status || "UNKNOWN";
+                console.log(
+                  `✅ ${productName} (updated) - ID: ${productId}, Status: ${status}`,
+                );
+              }
+
               return { success: true, product: result?.product };
             } catch (error) {
               console.error(
@@ -355,8 +534,10 @@ class SyncScheduler {
       }
 
       console.log(
-        `✅ Updates completed: ${successCount} successful, ${errorCount} failed`,
+        `✅ Updates completed: ${successCount} successful (🆕 ${createdCount} created, ♻️ ${updatedCount} updated), ${errorCount} failed`,
       );
+
+      return { created: createdCount, updated: updatedCount };
     } catch (error) {
       console.error("❌ Failed to apply bulk updates:", error.message);
       throw error;
@@ -367,6 +548,7 @@ class SyncScheduler {
     console.log(`\n${"=".repeat(60)}`);
     console.log(`📊 Sync Statistics:`);
     console.log(`   Total processed: ${this.stats.totalProcessed}`);
+    console.log(`   Created: ${this.stats.created}`);
     console.log(`   Updated: ${this.stats.updated}`);
     console.log(`   Errors: ${this.stats.errors}`);
     console.log(`   Cycles completed: ${this.stats.cycles}`);

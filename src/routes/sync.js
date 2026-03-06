@@ -175,7 +175,8 @@ async function fullSync(platforms = "all") {
 }
 
 async function syncPlatform(platform) {
-  // Fetch existing products map once at the start
+  // Fetch existing products map for bulk operations (avoids "handle already in use" errors)
+  console.log(`📋 Fetching existing products from Shopify...`);
   const existingProductsMap = await getAllProductsMap();
   console.log(
     `📋 Found ${existingProductsMap.size} existing products in Shopify\n`,
@@ -240,16 +241,16 @@ async function syncPlatform(platform) {
       const rows = productsToSync
         .map((product) => {
           try {
-            // Get SKU for this product
+            // Get SKU for lookup
             const sku = String(product.productId || product.kinguinId);
-
-            // Check if product already exists in Shopify
             const existingProduct = existingProductsMap.get(sku);
 
             if (existingProduct) {
               console.log(
                 `♻️  Will update: ${product.name} (${existingProduct.id})`,
               );
+            } else {
+              console.log(`🆕 Will create: ${product.name} (SKU: ${sku})`);
             }
 
             return {
