@@ -128,16 +128,27 @@ export async function saveKeysToOrder(orderId, keys) {
       image: k.image,
     }));
 
+    // Format keys for customer-facing display (licenses.game_key)
+    const keysText = keys.map((k) => `${k.productName}: ${k.key}`).join("\n");
+
     const mutation = `
       mutation {
         orderUpdate(input: {
           id: "${orderId}",
-          metafields: [{
-            namespace: "game_keys",
-            key: "delivered_keys",
-            type: "json",
-            value: ${JSON.stringify(JSON.stringify(keysData))}
-          }]
+          metafields: [
+            {
+              namespace: "game_keys",
+              key: "delivered_keys",
+              type: "json",
+              value: ${JSON.stringify(JSON.stringify(keysData))}
+            },
+            {
+              namespace: "licenses",
+              key: "game_key",
+              type: "single_line_text_field",
+              value: ${JSON.stringify(keysText)}
+            }
+          ]
         }) {
           order {
             id
@@ -160,7 +171,9 @@ export async function saveKeysToOrder(orderId, keys) {
       throw new Error("Failed to save keys to order metafield");
     }
 
-    console.log(`✅ Keys saved to order ${orderId} metafields`);
+    console.log(
+      `✅ Keys saved to order ${orderId} metafields (game_keys.delivered_keys + licenses.game_key)`,
+    );
   } catch (error) {
     console.error("❌ Error saving keys to order:", error.message);
     throw error;

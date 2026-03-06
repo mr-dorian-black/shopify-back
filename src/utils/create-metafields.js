@@ -86,10 +86,30 @@ export async function createMetafieldDefinitions() {
       type: "json",
       ownerType: "PRODUCT",
     },
+    {
+      name: "Delivered Keys",
+      namespace: "game_keys",
+      key: "delivered_keys",
+      type: "json",
+      ownerType: "ORDER",
+    },
+    {
+      name: "Game Key",
+      namespace: "licenses",
+      key: "game_key",
+      type: "single_line_text_field",
+      ownerType: "ORDER",
+      visibleToStorefrontApi: true,
+    },
   ];
 
   for (const def of definitions) {
     try {
+      // Build visibleToStorefrontApi section if specified
+      const storefrontVisibility = def.visibleToStorefrontApi
+        ? `, visibleToStorefrontApi: ${def.visibleToStorefrontApi}`
+        : "";
+
       const mutation = `
         mutation {
           metafieldDefinitionCreate(definition: {
@@ -97,7 +117,7 @@ export async function createMetafieldDefinitions() {
             namespace: "${def.namespace}",
             key: "${def.key}",
             type: "${def.type}",
-            ownerType: ${def.ownerType}
+            ownerType: ${def.ownerType}${storefrontVisibility}
           }) {
             createdDefinition {
               id
