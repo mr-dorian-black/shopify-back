@@ -5,10 +5,14 @@ Express.js backend for integrating Shopify store with Kinguin API for automated 
 ## 🚀 Features
 
 - **Order Processing**: Automatic purchase and delivery of game keys from Kinguin
+- **Order Fulfillment**: Automatic fulfillment in Shopify after key delivery
 - **Inventory Sync**: Real-time product synchronization with Kinguin
 - **Cart Validation**: Pre-checkout validation of product availability and prices
 - **Webhooks**: Shopify webhook handlers for orders, refunds, and product updates
 - **Auto-Sync Scheduler**: Periodic background synchronization
+- **Email Delivery**: Branded email notifications with game keys (via Brevo)
+- **Metafields**: Store game keys in order metafields (accessible via Liquid theme & Customer Account UI)
+- **Customer Account UI Extension**: React-based extension to display keys in customer's order page
 
 ## 📋 API Endpoints
 
@@ -17,6 +21,10 @@ Express.js backend for integrating Shopify store with Kinguin API for automated 
 - `GET /products/check` - Check Shopify products
 - `GET /products/count` - Get total products count
 - **`POST /products/validate-cart`** - Validate cart items before checkout ✨
+
+### Metafields
+
+- `POST /metafields/init` - Create metafield definitions for storing game keys
 
 ### Sync
 
@@ -39,7 +47,7 @@ Express.js backend for integrating Shopify store with Kinguin API for automated 
 
 ## 🛒 Cart Validation (Pre-Checkout)
 
-Validate cart items **before** customer proceeds to checkout:
+Validate cart items **before** customer proceeds to checkout to prevent order failures.
 
 ```bash
 curl -X POST http://localhost:3000/products/validate-cart \
@@ -56,54 +64,89 @@ curl -X POST http://localhost:3000/products/validate-cart \
   }'
 ```
 
+**Features:**
+
+- ✅ Check product availability in Kinguin
+- ✅ Validate stock levels
+- ✅ Detect price mismatches
+- ✅ Get actionable recommendations
+- ✅ Block checkout if items unavailable
+
 **Response:**
 
 ```json
 {
   "ok": true,
-  "valid": true,
+  "canProceedToCheckout": true,
   "items": [...],
   "summary": {
     "total": 1,
     "valid": 1,
-    "invalid": 0
+    "invalid": 0,
+    "outOfStock": 0,
+    "priceMismatch": 0
   },
-  "errors": []
+  "recommendations": []
 }
 ```
 
-See [WEBHOOKS.md](WEBHOOKS.md) for detailed documentation.
+See [WEBHOOKS.md](WEBHOOKS.md#-cart-validation-pre-checkout) for complete documentation with frontend integration examples.
 
 ## ⚙️ Environment Variables
 
-Create `.env` file with:
+Copy `env.example` to `.env` and fill in your values:
+
+```bash
+cp env.example .env
+```
+
+**Required Environment Variables:**
 
 ```env
 # Kinguin API
-KINGUIN_API_KEY=your_kinguin_api_key
+KINGUIN_API_KEY=your_kinguin_api_key_here
 
 # Shopify
-SHOPIFY_CLIENT_ID=your_client_id
-SHOPIFY_SECRET_KEY=your_secret_key
-SHOPIFY_STORE=your_store_name
-SHOPIFY_LOCATION_ID=gid://shopify/Location/xxxxx
+SHOPIFY_STORE=your-store-name
+SHOPIFY_CLIENT_ID=your_client_id_here
+SHOPIFY_SECRET_KEY=your_secret_key_here
+SHOPIFY_LOCATION_ID=gid://shopify/Location/YOUR_LOCATION_ID
 
-# Email (optional)
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your_email@gmail.com
-SMTP_PASS=your_password
-SMTP_FROM=noreply@yourstore.com
+# Brevo Email Service (https://www.brevo.com)
+# Get your API key from: https://app.brevo.com/settings/keys/api
+BREVO_API_KEY=your_brevo_api_key_here
+BREVO_SENDER_EMAIL=noreply@yourdomain.com
+BREVO_SENDER_NAME=Your Store Name
+
+# Email Branding (Optional)
+# Upload your logo to a CDN/hosting and paste the URL here
+LOGO_URL=https://your-cdn.com/logo.png
 
 # Server
 PORT=3000
 ```
+
+**How to get these values:**
+
+- **Kinguin API Key**: Register at [Kinguin Developer Portal](https://developer.kinguin.io/)
+- **Shopify Credentials**: Create a custom app in Shopify Admin → Apps → App and sales channel settings → Develop apps
+- **Shopify Location ID**: Found in Admin → Settings → Locations (or via GraphQL query)
+- **Brevo API Key**: Sign up at [Brevo](https://www.brevo.com), then go to Settings → API Keys
 
 ## 🚀 Installation
 
 ```bash
 # Install dependencies
 npm install
+
+# Copy environment variables template
+cp env.example .env
+
+# Edit .env with your credentials
+nano .env  # or use your preferred editor
+
+# Create metafield definitions in Shopify
+curl -X POST http://localhost:3000/metafields/init
 
 # Run development server
 npm run dev
@@ -138,23 +181,47 @@ shopify-back/
 │   │   ├── const.js           # Constants
 │   │   └── env.js             # Environment variables
 │   ├── routes/                # API routes
-│   │   ├── index.js
+│   │   ├── index.js           # Main routes (auth, metafields)
 │   │   ├── products.js        # Product endpoints
 │   │   ├── sync.js            # Sync endpoints
 │   │   └── webhooks.js        # Webhook handlers
 │   ├── services/              # Business logic
-│   │   ├── email/             # Email service
+│   │   ├── email/             # Brevo email service
+│   │   │   └── mailer.js
 │   │   ├── kinguin/           # Kinguin API integration
-│   │   ├── shopify/           # Shopify GraphQL
+│   │   │   ├── orders.js
+│   │   │   ├── products.js
+│   │   │   └── validation.js
+│   │   ├── shopify/           # Shopify GraphQL & API
+│   │   │   ├── auth.js
+│   │   │   ├── bulk.js
+│   │   │   ├── customers.js
+│   │   │   ├── orders.js
+│   │   │   ├── products.js
+│   │   │   └── webhooks.js
 │   │   └── sync/              # Auto-sync scheduler
+│   │       └── scheduler.js
 │   └── utils/                 # Utilities
 │       ├── bulk-helpers.js
 │       ├── create-metafields.js
+│       ├── logger.js
 │       └── product-builder.js
+├── extensions/                # Shopify UI Extensions
+│   └── order-keys/            # Customer Account UI extension
+│       ├── src/
+│       │   └── OrderKey.jsx   # React component
+│       ├── shopify.extension.toml
+│       ├── package.json
+│       └── README.md
 ├── index.js                   # Server entry point
 ├── package.json
-├── WEBHOOKS.md               # Webhook documentation
-└── test-cart-validation.sh   # Test script
+├── env.example                # Environment variables template
+├── shopify.app.toml           # Shopify CLI app config
+├── WEBHOOKS.md                # Webhook documentation
+├── LICENSES_METAFIELD_SETUP.md
+├── CUSTOMER_ACCOUNT_UI_FULL_GUIDE.md
+├── QUICK_START_UI_EXTENSION.md
+└── test-cart-validation.sh    # Test script
 ```
 
 ## 🧪 Testing
@@ -172,25 +239,57 @@ curl -X POST http://localhost:3000/products/validate-cart \
 ## 📚 Documentation
 
 - [WEBHOOKS.md](WEBHOOKS.md) - Complete webhook documentation
+- [LICENSES_METAFIELD_SETUP.md](LICENSES_METAFIELD_SETUP.md) - Metafield setup guide
+- [CUSTOMER_ACCOUNT_UI_FULL_GUIDE.md](CUSTOMER_ACCOUNT_UI_FULL_GUIDE.md) - Customer Account UI Extension guide
+- [QUICK_START_UI_EXTENSION.md](QUICK_START_UI_EXTENSION.md) - Quick setup for UI extension
 - [Shopify GraphQL API](https://shopify.dev/docs/api/admin-graphql)
 - [Kinguin API Docs](https://developer.kinguin.io/)
+- [Brevo Email API](https://developers.brevo.com/)
 
 ## 🔒 Security Notes
 
-- Add HMAC webhook verification in production
-- Implement rate limiting
-- Use environment variables for sensitive data
-- Enable HTTPS in production
+- ⚠️ Add HMAC webhook verification in production
+- ⚠️ Implement rate limiting
+- ✅ Use environment variables for sensitive data
+- ✅ Enable HTTPS in production (required for webhooks)
+- ✅ Use Brevo API (more secure than SMTP)
+
+**Webhook Verification Example:**
+
+```javascript
+const crypto = require("crypto");
+
+function verifyWebhook(data, hmacHeader) {
+  const hash = crypto
+    .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
+    .update(data, "utf8")
+    .digest("base64");
+
+  return hash === hmacHeader;
+}
+```
 
 ## 📝 TODO
+
+### High Priority
 
 - [ ] Add HMAC webhook verification
 - [ ] Implement rate limiting
 - [ ] Add webhook logging to database
+
+### Medium Priority
+
 - [ ] Real-time inventory sync (every 5-10 minutes)
 - [ ] Cache validation results
+- [ ] Kinguin order cancellation handling
+- [ ] Key deactivation on refunds
+
+### Low Priority
+
 - [ ] Add comprehensive error logging
 - [ ] Write unit tests
+- [ ] Add retry logic for failed Kinguin orders
+- [ ] Implement products/update webhook handler
 
 ## 📄 License
 

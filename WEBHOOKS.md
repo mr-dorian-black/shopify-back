@@ -35,10 +35,67 @@
 
 - **Endpoint:** `POST /webhooks/products/update`
 - **Purpose:** Synchronize product updates
-- **Actions:**
+- **Status:** ⚠️ Not yet implemented
+- **Planned Actions:**
   - Track price changes
   - Update product availability
-  - Sync with Kinguin (TODO)
+  - Sync with Kinguin
+
+---
+
+## 🎯 Metafield Definitions
+
+### Create Metafield Definitions
+
+**Endpoint:** `POST /metafields/init`
+
+**Purpose:** Create custom data metafield definitions in Shopify for storing game keys on orders.
+
+**Created Metafields:**
+
+1. **`game_keys.delivered_keys`** (JSON)
+   - Type: `json`
+   - Owner: Order
+   - Purpose: Store keys with product info and images for Liquid theme display
+   - Format: `[{product: "Game Name", key: "XXXX-XXXX", image: "https://..."}]`
+
+2. **`licenses.game_key`** (Single line text)
+   - Type: `single_line_text_field`
+   - Owner: Order
+   - Purpose: Store keys for Customer Account UI Extensions
+   - Access: Customer READ (visible in customer account)
+   - Format: `"Game 1: KEY-1234\nGame 2: KEY-5678"`
+
+**Request:**
+
+```bash
+curl -X POST http://localhost:3000/metafields/init
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "message": "Metafield definitions created successfully",
+  "definitions": [
+    {
+      "namespace": "game_keys",
+      "key": "delivered_keys",
+      "name": "Delivered Game Keys",
+      "type": "json"
+    },
+    {
+      "namespace": "licenses",
+      "key": "game_key",
+      "name": "Game Key",
+      "type": "single_line_text_field"
+    }
+  ]
+}
+```
+
+**Note:** This only needs to be run once per Shopify store. After creation, you can verify the metafields in **Shopify Admin → Settings → Custom data → Orders**.
 
 ---
 
@@ -108,7 +165,7 @@ curl -X POST http://localhost:3000/webhooks/register-all \
 
 ---
 
-## � Cart Validation (Pre-Checkout)
+## 🛒 Cart Validation (Pre-Checkout)
 
 Since Shopify doesn't provide a webhook for adding items to cart, use this endpoint to validate cart items **before checkout**.
 
@@ -331,7 +388,7 @@ document
 
 ---
 
-## �📋 List Webhooks
+## 📋 List Webhooks
 
 **Endpoint:** `GET /webhooks/list`
 
