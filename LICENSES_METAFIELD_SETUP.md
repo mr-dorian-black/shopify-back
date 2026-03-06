@@ -1,10 +1,10 @@
-# Налаштування licenses.game_key Metafield
+# licenses.game_key Metafield Setup
 
-## 📋 Що зроблено:
+## 📋 What's Been Done:
 
-### 1. Додано визначення metafield
+### 1. Added metafield definition
 
-**Файл:** `src/utils/create-metafields.js`
+**File:** `src/utils/create-metafields.js`
 
 ```javascript
 {
@@ -17,16 +17,16 @@
 }
 ```
 
-### 2. Оновлено збереження ключів
+### 2. Updated key storage
 
-**Файл:** `src/services/shopify/orders.js`
+**File:** `src/services/shopify/orders.js`
 
-Тепер `saveKeysToOrder()` зберігає ключі в **2 metafields**:
+Now `saveKeysToOrder()` saves keys to **2 metafields**:
 
-1. **`game_keys.delivered_keys`** (JSON) - для Liquid theme
-2. **`licenses.game_key`** (текст) - для Storefront API / Customer Account
+1. **`game_keys.delivered_keys`** (JSON) - for Liquid theme
+2. **`licenses.game_key`** (text) - for Storefront API / Customer Account
 
-**Формат `licenses.game_key`:**
+**Format of `licenses.game_key`:**
 
 ```
 Game 1: KEY-1234-5678-ABCD
@@ -35,21 +35,21 @@ Game 2: KEY-EFGH-9012-IJKL
 
 ---
 
-## 🚀 Крок 1: Створити Metafield Definition
+## 🚀 Step 1: Create Metafield Definition
 
 ```bash
-# Запустіть сервер якщо не запущений
+# Start the server if not running
 npm start
 
-# Створіть metafield definitions
+# Create metafield definitions
 curl -X POST http://localhost:3000/metafields/init
 
-# Або використайте скрипт
+# Or use the script
 chmod +x test-metafield.sh
 ./test-metafield.sh
 ```
 
-**Очікуваний результат:**
+**Expected result:**
 
 ```json
 {
@@ -60,11 +60,11 @@ chmod +x test-metafield.sh
 
 ---
 
-## ✅ Крок 2: Перевірити в Shopify Admin
+## ✅ Step 2: Verify in Shopify Admin
 
-1. Відкрийте **Shopify Admin**
+1. Open **Shopify Admin**
 2. **Settings** → **Custom data** → **Orders**
-3. Знайдіть **"Game Key"**
+3. Find **"Game Key"**
    - Namespace: `licenses`
    - Key: `game_key`
    - Type: `Single line text`
@@ -73,18 +73,18 @@ chmod +x test-metafield.sh
 
 ---
 
-## 🧪 Крок 3: Тестування
+## 🧪 Step 3: Testing
 
-### Створіть тестове замовлення:
+### Create a test order:
 
-Webhook автоматично:
+Webhook will automatically:
 
-1. ✅ Отримає ключі з Kinguin
-2. ✅ Збереже в `licenses.game_key`
-3. ✅ Надішле email
-4. ✅ Спробує виконати fulfillment
+1. ✅ Retrieve keys from Kinguin
+2. ✅ Save to `licenses.game_key`
+3. ✅ Send email
+4. ✅ Attempt fulfillment
 
-### Перевірте metafield через GraphQL:
+### Check metafield via GraphQL:
 
 ```graphql
 query {
@@ -96,7 +96,7 @@ query {
 }
 ```
 
-**Очікуваний результат:**
+**Expected result:**
 
 ```json
 {
@@ -108,9 +108,9 @@ query {
 
 ---
 
-## 📱 Використання в Storefront API
+## 📱 Using in Storefront API
 
-Тепер ключі доступні через Storefront API (тому що `visibleToStorefrontApi: true`):
+Keys are now available through the Storefront API (because `visibleToStorefrontApi: true`):
 
 ```graphql
 query ($orderId: ID!) {
@@ -122,54 +122,54 @@ query ($orderId: ID!) {
 }
 ```
 
-Це дозволяє:
+This allows:
 
-- ✅ Показувати ключі в Customer Account UI
-- ✅ Створювати custom storefront з доступом до ключів
-- ✅ Використовувати в mobile apps через Storefront API
+- ✅ Display keys in Customer Account UI
+- ✅ Create custom storefront with key access
+- ✅ Use in mobile apps via Storefront API
 
 ---
 
-## 🎨 Відображення для клієнта
+## 🎨 Customer Display
 
-### Варіант 1: Liquid Theme (використовує game_keys.delivered_keys)
+### Option 1: Liquid Theme (uses game_keys.delivered_keys)
 
-Див. файл `main-order.liquid` - вже реалізовано з картинками та кнопкою Copy.
+See `main-order.liquid` file - already implemented with images and Copy button.
 
-### Варіант 2: Customer Account UI Extension (використовує licenses.game_key)
+### Option 2: Customer Account UI Extension (uses licenses.game_key)
 
-Для створення розширення потрібно:
+To create an extension you need:
 
 1. Shopify CLI app
-2. React компонент що читає metafield через Storefront API
-3. Extension config з `target: "customer-account.order-status.block.render"`
+2. React component that reads metafield via Storefront API
+3. Extension config with `target: "customer-account.order-status.block.render"`
 
 ---
 
-## 🔍 Налагодження
+## 🔍 Troubleshooting
 
-### Metafield не створюється:
+### Metafield not created:
 
 ```bash
-# Перевірте логи сервера
+# Check server logs
 npm start
 
-# Перевірте response
+# Check response
 curl -v -X POST http://localhost:3000/metafields/init
 ```
 
-### Ключі не зберігаються:
+### Keys not saved:
 
 ```bash
-# Перевірте логи webhook при створенні замовлення
-# Шукайте: "✅ Keys saved to order ... metafields"
+# Check webhook logs when creating an order
+# Look for: "✅ Keys saved to order ... metafields"
 ```
 
-### Перевірити що metafield існує в замовленні:
+### Check if metafield exists in order:
 
 1. Shopify Admin → Orders → [Order]
-2. Внизу сторінки натисніть **"Show JSON"**
-3. Шукайте:
+2. Click **"Show JSON"** at the bottom of the page
+3. Look for:
    ```json
    "metafields": {
      "licenses": {
@@ -180,9 +180,9 @@ curl -v -X POST http://localhost:3000/metafields/init
 
 ---
 
-## 📊 Структура даних
+## 📊 Data Structure
 
-**`game_keys.delivered_keys`** (JSON для Liquid):
+**`game_keys.delivered_keys`** (JSON for Liquid):
 
 ```json
 [
@@ -194,7 +194,7 @@ curl -v -X POST http://localhost:3000/metafields/init
 ]
 ```
 
-**`licenses.game_key`** (текст для Storefront API):
+**`licenses.game_key`** (text for Storefront API):
 
 ```
 Game Name: XXXX-XXXX
@@ -203,13 +203,13 @@ Game Name 2: YYYY-YYYY
 
 ---
 
-## 🎯 Наступні кроки
+## 🎯 Next Steps
 
-Якщо потрібно створити Customer Account UI Extension:
+If you need to create a Customer Account UI Extension:
 
-1. Створіть Shopify app з CLI
-2. Додайте extension з типом `customer-account.order-status.block.render`
-3. Читайте metafield через GraphQL в React компоненті
-4. Deploy extension через `shopify app deploy`
+1. Create a Shopify app with CLI
+2. Add an extension with type `customer-account.order-status.block.render`
+3. Read the metafield via GraphQL in a React component
+4. Deploy extension with `shopify app deploy`
 
-Потрібні інструкції для extension? Дайте знати! 🚀
+Need instructions for the extension? Let me know! 🚀
