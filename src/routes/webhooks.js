@@ -363,12 +363,25 @@ router.post("/orders/create", async (req, res) => {
 
         // Mark order as fulfilled in Shopify
         try {
-          await fulfillOrder(orderGid);
-          console.log(`✅ Order ${order.name} marked as fulfilled`);
+          console.log(
+            `🔄 Attempting to fulfill order ${order.name} (${orderGid})...`,
+          );
+          const fulfillmentResult = await fulfillOrder(orderGid);
+
+          if (fulfillmentResult) {
+            console.log(
+              `✅ Order ${order.name} marked as fulfilled:`,
+              fulfillmentResult,
+            );
+          } else {
+            console.warn(
+              `⚠️ Fulfillment returned null - order may already be fulfilled`,
+            );
+          }
         } catch (fulfillError) {
-          console.warn(
-            `⚠️ Could not mark order as fulfilled (keys still delivered):`,
-            fulfillError.message,
+          console.error(
+            `❌ Could not mark order as fulfilled (keys still delivered):`,
+            fulfillError,
           );
           await addOrderNote(
             orderGid,

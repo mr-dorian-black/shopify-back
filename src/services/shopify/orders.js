@@ -195,6 +195,7 @@ export async function fulfillOrder(orderId) {
     `;
 
     const orderResponse = await shopifyGraphQL.post("", { query });
+
     const fulfillmentOrders =
       orderResponse.data.data?.order?.fulfillmentOrders?.edges || [];
 
@@ -230,6 +231,10 @@ export async function fulfillOrder(orderId) {
     }
 
     console.log(`📦 Fulfilling ${lineItems.length} line item(s)...`);
+    console.log(
+      `   Line items:`,
+      lineItems.map((item) => `${item.id} (qty: ${item.quantity})`).join(", "),
+    );
 
     // Step 2: Create fulfillment
     const mutation = `
@@ -256,6 +261,12 @@ export async function fulfillOrder(orderId) {
     `;
 
     const response = await shopifyGraphQL.post("", { query: mutation });
+
+    // Check for GraphQL errors
+    if (response.data.errors) {
+      console.error("❌ GraphQL errors:", response.data.errors);
+      throw new Error(`GraphQL error: ${response.data.errors[0].message}`);
+    }
 
     if (response.data.data?.fulfillmentCreateV2?.userErrors?.length) {
       console.error(
