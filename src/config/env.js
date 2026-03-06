@@ -22,9 +22,8 @@ export const {
   SHOPIFY_STORE,
   SHOPIFY_LOCATION_ID,
   SHOPIFY_CURRENCY = "EUR",
-  SMTP_HOST,
-  SMTP_PORT,
-  SMTP_USER,
-  SMTP_PASS,
-  SMTP_FROM,
+  BREVO_API_KEY,
+  BREVO_SENDER_EMAIL,
+  BREVO_SENDER_NAME,
+  LOGO_URL, // Optional: Public URL to your logo (e.g., https://your-cdn.com/logo.png)
 } = process.env;

@@ -19,6 +19,11 @@ import {
   listWebhooks,
   deleteWebhook,
 } from "../services/shopify/webhooks.js";
+import {
+  logOrderProcessing,
+  saveKeysDeliveryRecord,
+  logOrderFailure,
+} from "../utils/logger.js";
 
 const router = express.Router();
 
@@ -26,14 +31,28 @@ router.post("/orders/create", async (req, res) => {
   try {
     res.status(200).send("OK");
     const order = req.body;
-    console.log(JSON.stringify(order, null, 2));
-    console.log(`\n🛒 New order received: ${order.id} (${order.name})`);
-    console.log(`Customer: ${order.customer?.email}`);
 
     const orderGid = `gid://shopify/Order/${order.id}`;
+
+    // Log order received
+    logOrderProcessing(
+      order.id,
+      order.name,
+      `🛒 New order received: ${order.id} (${order.name})`,
+      {
+        customer: order.customer?.email,
+        totalPrice: order.total_price,
+        itemsCount: order.line_items.length,
+      },
+    );
+
     const validationErrors = [];
 
-    console.log("\n🔍 STEP 1: Validating order items...");
+    logOrderProcessing(
+      order.id,
+      order.name,
+      "🔍 STEP 1: Validating order items...",
+    );
 
     for (const item of order.line_items) {
       const validation = await validateOrderItem(item, item.price);
@@ -72,8 +91,9 @@ router.post("/orders/create", async (req, res) => {
     }
 
     if (validationErrors.length > 0) {
-      console.error("\n❌ Order validation failed!");
-      console.error("Errors:", validationErrors);
+      logOrderProcessing(order.id, order.name, "❌ Order validation failed!", {
+        errors: validationErrors,
+      });
 
       const errorMessage = validationErrors
         .map((e) => `${e.item}: ${e.reason}`)
@@ -96,7 +116,19 @@ router.post("/orders/create", async (req, res) => {
           );
         }
 
-        console.log("✅ Order cancelled and refunded");
+        // Log order failure
+        logOrderFailure(
+          order.id,
+          order.name,
+          "Validation failed",
+          validationErrors,
+        );
+
+        logOrderProcessing(
+          order.id,
+          order.name,
+          "✅ Order cancelled and refunded",
+        );
         return;
       } catch (error) {
         console.error("❌ Failed to cancel/refund order:", error.message);
@@ -104,7 +136,11 @@ router.post("/orders/create", async (req, res) => {
       }
     }
 
-    console.log("\n✅ All items validated, proceeding with fulfillment...");
+    logOrderProcessing(
+      order.id,
+      order.name,
+      "✅ All items validated, proceeding with fulfillment...",
+    );
 
     const keysToDeliver = [];
     const failedItems = []; // Track failed items
@@ -116,7 +152,7 @@ router.post("/orders/create", async (req, res) => {
       try {
         console.log(`\n📦 Processing: ${item.name} (qty: ${item.quantity})`);
 
-        const kinguinProductId = item.sku;
+        const kinguinProductId = String(item.sku); // SKU should match Kinguin productId
 
         console.log(
           `🔑 Ordering key from Kinguin (Product ID: ${kinguinProductId})`,
@@ -125,15 +161,12 @@ router.post("/orders/create", async (req, res) => {
         const kinguinOrder = await createKinguinOrder(
           kinguinProductId,
           item.quantity,
+          item.price,
         );
-
-        console.log("kinguinOrder: ", JSON.stringify(kinguinOrder, null, 2));
 
         await new Promise((r) => setTimeout(r, 2000));
 
         const keys = await getKinguinOrderKeys(kinguinOrder.orderId);
-
-        console.log("keys: ", JSON.stringify(keys, null, 2));
 
         if (!keys.length) {
           throw new Error("No keys received from Kinguin");
@@ -153,6 +186,9 @@ router.post("/orders/create", async (req, res) => {
             productName: item.name,
             key: keyData.serial || keyData.key,
             kinguinOrderId: kinguinOrder.orderId,
+            // Get image from line item - Shopify provides this in webhook
+            image: item.featured_image?.url || null,
+            price: item.price,
           });
         }
       } catch (error) {
@@ -193,7 +229,12 @@ router.post("/orders/create", async (req, res) => {
 
         // If NO keys were delivered, cancel the entire order
         if (keysToDeliver.length === 0) {
-          console.error("❌ No keys delivered - cancelling order");
+          logOrderProcessing(
+            order.id,
+            order.name,
+            "❌ No keys delivered - cancelling order",
+          );
+
           await cancelShopifyOrder(
             orderGid,
             "Failed to obtain any keys from supplier",
@@ -212,7 +253,19 @@ router.post("/orders/create", async (req, res) => {
             );
           }
 
-          console.log("✅ Order fully cancelled and refunded");
+          // Log order failure
+          logOrderFailure(
+            order.id,
+            order.name,
+            "Failed to obtain any keys from supplier",
+            failedItems,
+          );
+
+          logOrderProcessing(
+            order.id,
+            order.name,
+            "✅ Order fully cancelled and refunded",
+          );
           return;
         } else {
           // Partial delivery - send what we have but notify about issues
@@ -242,15 +295,42 @@ router.post("/orders/create", async (req, res) => {
             order.id,
             keyInfo.productName,
             keyInfo.key,
+            (image = keyInfo.image),
           );
         }
 
         const customerName =
           order.customer.first_name || order.customer.email.split("@")[0];
 
-        await sendKeyEmail(order.customer.email, customerName, keysToDeliver);
+        await sendKeyEmail(
+          order.customer.email,
+          customerName,
+          keysToDeliver,
+          order.name, // Order number like #1001
+        );
 
-        console.log(`✅ Keys delivered to ${order.customer.email}`);
+        logOrderProcessing(
+          order.id,
+          order.name,
+          `✅ Keys delivered to ${order.customer.email}`,
+          {
+            keysCount: keysToDeliver.length,
+            products: keysToDeliver.map((k) => k.productName),
+          },
+        );
+
+        // Save keys delivery record for audit/backup
+        saveKeysDeliveryRecord({
+          orderId: order.id,
+          orderName: order.name,
+          customerId: order.customer.id,
+          customerEmail: order.customer.email,
+          customerName: customerName,
+          keys: keysToDeliver,
+          timestamp: new Date().toISOString(),
+          orderTotal: order.total_price,
+          currency: order.currency,
+        });
 
         const noteText = `Keys delivered:\n${keysToDeliver.map((k) => `${k.productName}: ${k.key}`).join("\n")}`;
         await addOrderNote(orderGid, noteText);
@@ -280,7 +360,11 @@ router.post("/orders/create", async (req, res) => {
       console.error("❌ No keys to deliver - already handled above");
     }
 
-    console.log(`✅ Order ${order.name} processed successfully`);
+    logOrderProcessing(
+      order.id,
+      order.name,
+      `✅ Order ${order.name} processed successfully`,
+    );
   } catch (error) {
     console.error("❌ Webhook processing error:", error);
   }
